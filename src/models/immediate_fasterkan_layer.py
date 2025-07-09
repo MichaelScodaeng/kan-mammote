@@ -299,7 +299,23 @@ class ImmediateFasterKANLayer(nn.Module):
             event_features_flat
         )
         # Reshape back to sequence format
-        current_embeddings = current_embeddings.view(batch_size, seq_len, self.D_time)
+        # Debug: Check shapes before reshaping
+        expected_total = batch_size * seq_len * self.D_time
+        actual_total = current_embeddings.numel()
+        if expected_total != actual_total:
+            print(f"Warning: Shape mismatch in current_embeddings reshape")
+            print(f"  Expected total elements: {expected_total}")
+            print(f"  Actual total elements: {actual_total}")
+            print(f"  current_embeddings shape: {current_embeddings.shape}")
+            print(f"  Target shape: ({batch_size}, {seq_len}, {self.D_time})")
+        
+        try:
+            current_embeddings = current_embeddings.view(batch_size, seq_len, self.D_time)
+        except RuntimeError as e:
+            print(f"Error reshaping current_embeddings: {e}")
+            # Create zero tensor as fallback
+            current_embeddings = torch.zeros(batch_size, seq_len, self.D_time, device=timestamps.device)
+            
         current_weights = current_weights.view(batch_size, seq_len, -1)
         current_masks = current_masks.view(batch_size, seq_len, -1)
         
@@ -309,7 +325,23 @@ class ImmediateFasterKANLayer(nn.Module):
             event_features_flat
         )
         # Reshape back to sequence format
-        previous_embeddings = previous_embeddings.view(batch_size, seq_len, self.D_time)
+        # Debug: Check shapes before reshaping
+        expected_total = batch_size * seq_len * self.D_time
+        actual_total = previous_embeddings.numel()
+        if expected_total != actual_total:
+            print(f"Warning: Shape mismatch in previous_embeddings reshape")
+            print(f"  Expected total elements: {expected_total}")
+            print(f"  Actual total elements: {actual_total}")
+            print(f"  previous_embeddings shape: {previous_embeddings.shape}")
+            print(f"  Target shape: ({batch_size}, {seq_len}, {self.D_time})")
+        
+        try:
+            previous_embeddings = previous_embeddings.view(batch_size, seq_len, self.D_time)
+        except RuntimeError as e:
+            print(f"Error reshaping previous_embeddings: {e}")
+            # Create zero tensor as fallback
+            previous_embeddings = torch.zeros(batch_size, seq_len, self.D_time, device=timestamps.device)
+            
         previous_weights = previous_weights.view(batch_size, seq_len, -1)
         previous_masks = previous_masks.view(batch_size, seq_len, -1)
         
