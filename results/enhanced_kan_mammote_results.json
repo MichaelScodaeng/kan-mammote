@@ -1,0 +1,17 @@
+{
+  "model_name": "Enhanced KAN-MAMMOTE",
+  "final_test_accuracy": 84.74,
+  "best_test_accuracy": 85.31,
+  "avg_epoch_time": 17.8,
+  "parameter_count": 255890,
+  "training_completed": false,
+  "improvement_over_baseline": 10.670000000000002,
+  "improvement_over_lete": 5.819999999999993,
+  "improvement_over_original": 3.3999999999999915,
+  "regularization_effectiveness": {
+    "tv_final": 0.0065,
+    "diversity_final": 5e-06,
+    "sobolev_final": 0.0013,
+    "temporal_final": 0.0032
+  }
+}

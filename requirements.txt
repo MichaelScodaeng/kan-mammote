@@ -1,0 +1,39 @@
+# --- Core Deep Learning Framework ---
+#torch>=2.0.0 # Or the specific version recommended for your CUDA setup (see note below)
+             # E.g., torch==2.2.1+cu121 for CUDA 12.1
+
+# --- Numerical and Scientific Computing ---
+numpy
+scipy # Useful for advanced math functions, e.g., specific wavelet mother functions
+pandas
+
+# --- Utility Libraries ---
+tqdm # For elegant progress bars in loops
+matplotlib # For plotting and visualization
+seaborn # For statistical data visualization
+scikit-learn # For machine learning utilities, e.g., train-test split, metrics
+# --- Wavelet Transform Libraries ---
+tensorboard # For experiment tracking, logging metrics, and visualizing models/data
+einops # Highly recommended for flexible and readable tensor operations (reshaping, transposing etc.)
+
+# --- Development & Testing (Optional, but good practice) ---
+pytest # For unit testing (if you plan to write tests, which you should!)
+black # For code formatting (to keep your code clean and consistent)
+isort # For sorting imports
+
+tqdm
+# python==3.11
+colorama==0.4.6
+filelock==3.13.1
+fsspec==2024.2.0
+iniconfig==2.0.0
+Jinja2==3.1.3
+MarkupSafe==2.1.5
+mpmath==1.3.0
+networkx==3.2.1
+packaging==24.1
+pluggy==1.5.0
+pykan==0.2.6
+pytest==8.3.3
+sympy==1.12
+typing_extensions

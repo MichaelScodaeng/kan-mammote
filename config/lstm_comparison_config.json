@@ -1,0 +1,85 @@
+{
+  "training": {
+    "batch_size": 128,
+    "learning_rate": 0.001,
+    "num_epochs": 50,
+    "dropout_rate": 0.2,
+    "optimizer": "adam",
+    "weight_decay": 0.0001,
+    "scheduler": {
+      "type": "step",
+      "step_size": 20,
+      "gamma": 0.5
+    }
+  },
+  
+  "model": {
+    "lstm_hidden_dim": 128,
+    "lstm_num_layers": 2,
+    "time_embedding_dim": 32,
+    "num_classes": 10
+  },
+  
+  "data": {
+    "threshold": 0.9,
+    "root": "./data",
+    "download": true,
+    "normalize": true
+  },
+  
+  "kan_mammote": {
+    "D_time": 32,
+    "num_experts": 4,
+    "hidden_dim_mamba": 32,
+    "state_dim_mamba": 8,
+    "num_mamba_layers": 1,
+    "gamma": 0.3,
+    "use_aux_features_router": false,
+    "raw_event_feature_dim": 16,
+    "K_top": 2,
+    "kan_grid_size": 5,
+    "kan_grid_min": -2.0,
+    "kan_grid_max": 2.0,
+    "kan_spline_scale": 0.5,
+    "kan_num_layers": 1,
+    "kan_hidden_dim": 32
+  },
+  
+  "lete": {
+    "dim": 32,
+    "p": 0.5,
+    "layer_norm": true,
+    "scale": true,
+    "parameter_requires_grad": true
+  },
+  
+  "sincos": {
+    "max_freq": 10000.0,
+    "temperature": 1.0
+  },
+  
+  "evaluation": {
+    "save_confusion_matrix": true,
+    "save_classification_report": true,
+    "analyze_temporal_patterns": true,
+    "statistical_significance": true
+  },
+  
+  "visualization": {
+    "plot_training_curves": true,
+    "plot_convergence_analysis": true,
+    "plot_temporal_patterns": true,
+    "plot_confusion_matrices": true,
+    "plot_statistical_significance": true,
+    "dpi": 300,
+    "figure_size": [15, 10]
+  },
+  
+  "results": {
+    "save_models": true,
+    "save_histories": true,
+    "save_detailed_analysis": true,
+    "results_dir": "results/lstm_comparison",
+    "create_summary_report": true
+  }
+}
