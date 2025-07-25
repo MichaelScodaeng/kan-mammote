@@ -1,10 +1,10 @@
 {
   "best_accuracies": {
-    "True_Baseline": 87.55,
-    "TimeDiff_Fourier_LSTM": 97.93,
-    "SinCos_LSTM": 93.14,
-    "LETE_LSTM": 94.44,
-    "KAN_MAMMOTE_LSTM": 96.78
+    "True_Baseline": 41.45,
+    "TimeDiff_Fourier_LSTM": 43.16,
+    "SinCos_LSTM": 68.62,
+    "LETE_LSTM": 68.09,
+    "KAN_MAMMOTE_LSTM": 67.86
   },
   "model_parameters": {
     "True_Baseline": 200458,
@@ -16,7 +16,7 @@
   "configuration": {
     "batch_size": 32,
     "learning_rate": 0.001,
-    "num_epochs": 10,
+    "num_epochs": 1,
     "lstm_hidden_dim": 128,
     "time_embedding_dim": 64,
     "dropout_rate": 0.2,
