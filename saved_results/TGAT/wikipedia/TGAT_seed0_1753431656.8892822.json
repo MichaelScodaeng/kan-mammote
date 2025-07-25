@@ -1,0 +1,22 @@
+{
+    "validate metrics": {
+        "average_precision": "0.8761",
+        "roc_auc": "0.8907"
+    },
+    "new node validate metrics": {
+        "average_precision": "0.8765",
+        "roc_auc": "0.8844"
+    },
+    "test metrics": {
+        "average_precision": "0.8684",
+        "roc_auc": "0.8826"
+    },
+    "new node test metrics": {
+        "average_precision": "0.8677",
+        "roc_auc": "0.8752"
+    },
+    "validate regularization losses": {},
+    "new node validate regularization losses": {},
+    "test regularization losses": {},
+    "new node test regularization losses": {}
+}

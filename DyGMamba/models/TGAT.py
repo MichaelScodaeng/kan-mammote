@@ -149,6 +149,8 @@ class TGAT(nn.Module):
                                                                                 node_interact_times=neighbor_times.flatten(), # This is the current_times for the neighbor's recursive call
                                                                                 current_layer_num=current_layer_num - 1,
                                                                                 num_neighbors=num_neighbors)
+            # Reshape back to (batch_size, num_neighbors, node_feat_dim)
+            neighbor_node_conv_features = neighbor_node_conv_features.reshape(node_ids.shape[0], num_neighbors, self.node_feat_dim)
             # Update losses
             for loss_name, loss_value in reg_losses_conv_neighbor.items():
                 current_time_encoder_reg_losses[loss_name] = current_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value

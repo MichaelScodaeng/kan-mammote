@@ -236,7 +236,13 @@ class MultiHeadAttention(nn.Module):
         query = residual = torch.cat([node_features, node_time_features], dim=2)
         # shape (batch_size, 1, num_heads, self.head_dim)
         query = self.query_projection(query).reshape(query.shape[0], query.shape[1], self.num_heads, self.head_dim)
-
+         # --- THESE DEBUG PRINTS ---
+        #print(f"DEBUG MHA: Input node_features shape: {node_features.shape}")
+        #print(f"DEBUG MHA: Input node_time_features shape: {node_time_features.shape}")
+        #print(f"DEBUG MHA: Input neighbor_node_features shape: {neighbor_node_features.shape}")
+        #print(f"DEBUG MHA: Input neighbor_node_time_features shape: {neighbor_node_time_features.shape}")
+        #print(f"DEBUG MHA: Input neighbor_node_edge_features shape: {neighbor_node_edge_features.shape}")
+        # --- END DEBUG PRINTS ---
         # Tensor, shape (batch_size, num_neighbors, node_feat_dim + edge_feat_dim + time_feat_dim)
         key = value = torch.cat([neighbor_node_features, neighbor_node_edge_features, neighbor_node_time_features], dim=2)
         # Tensor, shape (batch_size, num_neighbors, num_heads, self.head_dim)
