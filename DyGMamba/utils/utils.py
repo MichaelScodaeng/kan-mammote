@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from utils.DataLoader import Data
+from DyGMamba.utils.DataLoader import Data
 
 
 
@@ -502,3 +502,58 @@ class NegativeEdgeSampler(object):
         :return:
         """
         self.random_state = np.random.RandomState(self.seed)
+
+import torch
+from dataclasses import dataclass, field
+from typing import Literal, Optional, Tuple, List
+
+@dataclass
+class KANMAMMOTEConfig:
+    # KAN-MAMMOTE Time Encoding (K-MOTE + FasterKAN) Specific Parameters
+    # D_time is the output dimension of K-MOTE and FasterKAN
+    D_time: int = 64 # Output dimension of the time embedding from K-MOTE / FasterKAN
+
+    # K-MOTE (Adaptive Time Encoding) Parameters
+    num_experts: int = 4  # Number of experts in K-MOTE (Fourier, Spline, Gaussian, Wavelet)
+    K_top: int = 4  # Number of top-K experts to select (set to num_experts for all experts)
+    use_aux_features_router: bool = False  # Whether router uses auxiliary features (False for current LP task)
+    raw_event_feature_dim: int = 0  # Dimension of auxiliary features (0 if not used)
+    use_load_balancing: bool = True  # Whether to apply load balancing loss for MoE
+    balance_coefficient: float = 0.01  # Coefficient for load balancing loss
+    router_noise_scale: float = 1e-2  # Noise added to router logits during training
+
+    # KAN-Layer / Basis Function Specific Parameters (for K-MOTE and FasterKAN)
+    kan_noise_scale: float = 0.1  # Noise scale for MatrixKANLayer
+    kan_scale_base_mu: float = 0.0  # Mean for base scale initialization
+    kan_scale_base_sigma: float = 1.0  # Std for base scale initialization
+    kan_grid_eps: float = 0.02  # Epsilon for adaptive grid update
+    kan_grid_range: List[float] = field(default_factory=lambda: [-1.0, 1.0])  # Initial grid range for splines
+    kan_sp_trainable: bool = True  # Scale spline trainable
+    kan_sb_trainable: bool = True  # Scale base trainable
+
+    # Fourier Basis
+    fourier_k_prime: int = 5  # Number of harmonics for FourierBasis
+    fourier_learnable_params: bool = True  # Whether Fourier params (A, omega, phi) are learnable
+
+    # RKHS Gaussian Basis
+    rkhs_num_mixture_components: int = 8  # Number of Gaussian mixture components
+
+    # Wavelet Basis
+    wavelet_num_wavelets: int = 8  # Number of wavelets
+    wavelet_mother_type: Literal['mexican_hat', 'morlet'] = 'mexican_hat' # Type of mother wavelet
+    wavelet_learnable_params: bool = True # Whether Wavelet params are learnable
+
+    # Spline Basis (MatrixKANLayer)
+    spline_grid_size: int = 5
+    spline_degree: int = 3
+
+    # Regularization (coefficients for optional losses)
+    lambda_sobolev_l2: float = 0.0  # Coefficient for Sobolev L2 regularization loss
+    lambda_total_variation: float = 0.0 # Coefficient for Total Variation regularization loss
+
+    # Device/Dtype (Global, but passed to time encoder components)
+    device: str = "cpu"
+    dtype: torch.dtype = torch.float32
+
+    def to_dict(self):
+        return self.__dict__

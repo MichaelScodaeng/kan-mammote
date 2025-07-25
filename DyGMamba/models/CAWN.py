@@ -3,14 +3,24 @@ import numpy as np
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from models.modules import TimeEncoder, TransformerEncoder
-from utils.utils import NeighborSampler
+from DyGMamba.models.modules import TimeEncoder, TransformerEncoder
+from DyGMamba.utils.utils import NeighborSampler
+
+
+import torch
+import numpy as np
+import torch.nn as nn
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+# Import the new TimeEncoder wrapper from modules
+from DyGMamba.models.modules import TimeEncoder, TransformerEncoder 
 
 
 class CAWN(nn.Module):
 
     def __init__(self, node_raw_features: np.ndarray, edge_raw_features: np.ndarray, neighbor_sampler: NeighborSampler,
-                 time_feat_dim: int, position_feat_dim: int, walk_length: int = 2, num_walk_heads: int = 8, dropout: float = 0.1, device: str = 'cpu'):
+                 time_feat_dim: int, position_feat_dim: int, walk_length: int = 2, num_walk_heads: int = 8, dropout: float = 0.1, device: str = 'cpu',
+                 time_encoder_type: str = 'FixedSinusoidal', time_encoder_config: dict = None): # ADDED time_encoder_type and time_encoder_config
         """
         Causal anonymous walks network.
         :param node_raw_features: ndarray, shape (num_nodes + 1, node_feat_dim)
@@ -22,6 +32,8 @@ class CAWN(nn.Module):
         :param num_walk_heads: int, number of attention heads to aggregate random walks
         :param dropout: float, dropout rate
         :param device: str, device
+        :param time_encoder_type: str, type of time encoder to use (e.g., 'KANMAMMOTE', 'LeTE', 'SPE', 'LPE', 'NoTime', 'FixedSinusoidal')
+        :param time_encoder_config: dict, configuration dictionary for the time encoder
         """
         super(CAWN, self).__init__()
 
@@ -38,7 +50,8 @@ class CAWN(nn.Module):
         self.dropout = dropout
         self.device = device
 
-        self.time_encoder = TimeEncoder(time_dim=time_feat_dim)
+        # Instantiate the new TimeEncoder wrapper
+        self.time_encoder = TimeEncoder(time_dim=time_feat_dim, time_encoder_type=time_encoder_type, time_encoder_config=time_encoder_config) # UPDATED
 
         self.position_encoder = PositionEncoder(position_feat_dim=self.position_feat_dim, walk_length=self.walk_length, device=device)
 
@@ -51,10 +64,16 @@ class CAWN(nn.Module):
         compute source and destination node temporal embeddings
         :param src_node_ids: ndarray, shape (batch_size, )
         :param dst_node_ids:: ndarray, shape (batch_size, )
-        :param node_interact_times: ndarray, shape (batch_size, )
+        :param node_interact_times: ndarray, shape (batch_size, ) (Absolute current interaction time)
         :param num_neighbors: int, number of neighbors to sample for each node
         :return:
+            src_node_embeddings (Tensor): Temporal embeddings for source nodes. Shape (batch_size, node_feat_dim).
+            dst_node_embeddings (Tensor): Temporal embeddings for destination nodes. Shape (batch_size, node_feat_dim).
+            time_encoder_reg_losses (dict): Dictionary of regularization losses from the time encoder.
         """
+        # Collect regularization losses from time encoder (if any)
+        total_time_encoder_reg_losses = {}
+
         # get the multi-hop graph for each node
         # tuple, each element in the tuple is a list of self.walk_length ndarrays, each with shape (batch_size, num_neighbors ** current_hop)
         src_node_multi_hop_graphs = self.neighbor_sampler.get_multi_hop_neighbors(num_hops=self.walk_length, node_ids=src_node_ids,
@@ -71,22 +90,35 @@ class CAWN(nn.Module):
                                                       dst_node_multi_hop_graphs=dst_node_multi_hop_graphs)
 
         # Tensor, shape (batch_size, node_feat_dim)
-        src_node_embeddings = self.compute_node_temporal_embeddings(node_ids=src_node_ids, node_interact_times=node_interact_times,
+        src_node_embeddings, src_reg_losses = self.compute_node_temporal_embeddings(node_ids=src_node_ids, node_interact_times=node_interact_times,
                                                                     node_multi_hop_graphs=src_node_multi_hop_graphs, num_neighbors=num_neighbors)
-        # Tensor, shape (batch_size, node_feat_dim)
-        dst_node_embeddings = self.compute_node_temporal_embeddings(node_ids=dst_node_ids, node_interact_times=node_interact_times,
-                                                                    node_multi_hop_graphs=dst_node_multi_hop_graphs, num_neighbors=num_neighbors)
+        # Update total_time_encoder_reg_losses
+        for loss_name, loss_value in src_reg_losses.items():
+            total_time_encoder_reg_losses[loss_name] = total_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value
 
-        return src_node_embeddings, dst_node_embeddings
+        # Tensor, shape (batch_size, node_feat_dim)
+        dst_node_embeddings, dst_reg_losses = self.compute_node_temporal_embeddings(node_ids=dst_node_ids, node_interact_times=node_interact_times,
+                                                                    node_multi_hop_graphs=dst_node_multi_hop_graphs, num_neighbors=num_neighbors)
+        # Update total_time_encoder_reg_losses
+        for loss_name, loss_value in dst_reg_losses.items():
+            total_time_encoder_reg_losses[loss_name] = total_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value
+
+        return src_node_embeddings, dst_node_embeddings, total_time_encoder_reg_losses # ADDED regularization losses
 
     def compute_node_temporal_embeddings(self, node_ids: np.ndarray, node_interact_times: np.ndarray, node_multi_hop_graphs: tuple, num_neighbors: int = 20):
         """
         given node interaction time node_interact_times and node multi-hop graphs node_multi_hop_graphs,
         return the temporal embeddings of nodes
-        :param node_interact_times: ndarray, shape (batch_size, )
+        :param node_interact_times: ndarray, shape (batch_size, ) (Absolute interaction time of current node/query node)
         :param node_multi_hop_graphs: tuple of three ndarrays, each array with shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1)
-        :return:
+        :return: Tuple[torch.Tensor, dict]
+            torch.Tensor: Node embeddings
+            dict: Regularization losses from time encoder
         """
+        # Initialize losses for this computation path
+        current_time_encoder_reg_losses = {}
+        device = self.device
+
         # three ndarrays, each array with shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1)
         nodes_neighbor_ids, nodes_edge_ids, nodes_neighbor_times = \
             self.convert_format_from_tree_to_array(node_ids=node_ids, node_interact_times=node_interact_times,
@@ -99,16 +131,32 @@ class CAWN(nn.Module):
         # ndarray, shape (batch_size, num_neighbors ** self.walk_length), record the valid length of each walk
         walks_valid_lengths = (nodes_neighbor_ids != 0).sum(axis=-1)
 
-        # get time features of nodes in the multi-hop graphs
-        # check that the time of start node in each walk should be identical to the node in the batch
-        assert (nodes_neighbor_times[:, :, 0] == node_interact_times.repeat(repeats=num_neighbors ** self.walk_length, axis=0).
-                reshape(len(node_interact_times), num_neighbors ** self.walk_length)).all()
-        # ndarray, shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1)
-        nodes_neighbor_delta_times = nodes_neighbor_times[:, :, 0][:, :, np.newaxis] - nodes_neighbor_times
-        # Tensor, shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1, time_feat_dim)
-        neighbor_time_features = self.time_encoder(timestamps=torch.from_numpy(nodes_neighbor_delta_times).float().to(self.device).flatten(start_dim=1))\
-            .reshape(nodes_neighbor_delta_times.shape[0], nodes_neighbor_delta_times.shape[1], nodes_neighbor_delta_times.shape[2], self.time_feat_dim)
+        # get time features of nodes in the multi-hop graphs using the new interface
+        # The current_times for each element in the walks sequence is the start time of that walk.
+        # The neighbor_times for each element are the absolute times along that walk.
+        # Reshape to (batch_size * num_walks, walk_length + 1) for the time encoder input.
+        current_times_for_encoder_reshaped = torch.from_numpy(nodes_neighbor_times[:, :, 0]).float().to(self.device).unsqueeze(dim=-1).repeat(1, 1, self.walk_length + 1)
+        current_times_for_encoder_reshaped = current_times_for_encoder_reshaped.view(-1, self.walk_length + 1)
 
+        neighbor_times_for_encoder_reshaped = torch.from_numpy(nodes_neighbor_times).float().to(self.device)
+        neighbor_times_for_encoder_reshaped = neighbor_times_for_encoder_reshaped.view(-1, self.walk_length + 1)
+        
+        # Now pass to self.time_encoder
+        # It returns (time_embeddings, reg_losses_dict)
+        # time_embeddings will have shape (batch_size * num_walks, walk_length + 1, time_feat_dim)
+        neighbor_time_features, reg_losses_time_encoder = self.time_encoder(
+            current_times=current_times_for_encoder_reshaped,
+            neighbor_times=neighbor_times_for_encoder_reshaped
+        )
+        # Accumulate regularization losses
+        for loss_name, loss_value in reg_losses_time_encoder.items():
+            current_time_encoder_reg_losses[loss_name] = current_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value
+
+        # Reshape neighbor_time_features back to (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1, time_feat_dim)
+        neighbor_time_features = neighbor_time_features.view(
+            nodes_neighbor_ids.shape[0], nodes_neighbor_ids.shape[1], nodes_neighbor_ids.shape[2], self.time_feat_dim
+        )
+        
         # get edge features of nodes in the multi-hop graphs
         # ndarray, shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1)
         # check that the edge ids of the target node is denoted by zeros
@@ -125,7 +173,7 @@ class CAWN(nn.Module):
         final_node_embeddings = self.walk_encoder(neighbor_raw_features=neighbor_raw_features, neighbor_time_features=neighbor_time_features,
                                                   edge_features=edge_features, neighbor_position_features=neighbor_position_features,
                                                   walks_valid_lengths=walks_valid_lengths)
-        return final_node_embeddings
+        return final_node_embeddings, current_time_encoder_reg_losses # Return output and accumulated losses
 
     def convert_format_from_tree_to_array(self, node_ids: np.ndarray, node_interact_times: np.ndarray, node_multi_hop_graphs: tuple, num_neighbors: int = 20):
         """
@@ -176,115 +224,59 @@ class CAWN(nn.Module):
 
 
 class PositionEncoder(nn.Module):
-
+    # ... (PositionEncoder class remains the same) ...
     def __init__(self, position_feat_dim: int, walk_length: int, device: str = 'cpu'):
-        """
-        Position encoder that computes each node position features.
-        :param position_feat_dim: int, dimension of position features (encodings)
-        :param walk_length: int, length of each random walk
-        :param device: str, device
-        """
         super(PositionEncoder, self).__init__()
         self.position_feat_dim = position_feat_dim
         self.walk_length = walk_length
         self.device = device
 
-        # two-layered feed forward network with ReLU activation
         self.position_encode_layer = nn.Sequential(nn.Linear(in_features=self.walk_length + 1, out_features=self.position_feat_dim),
                                                    nn.ReLU(),
                                                    nn.Linear(in_features=self.position_feat_dim, out_features=self.position_feat_dim))
 
     def count_nodes_appearances(self, src_node_ids: np.ndarray, dst_node_ids: np.ndarray, node_interact_times: np.ndarray,
                                 src_node_multi_hop_graphs: tuple, dst_node_multi_hop_graphs: tuple):
-        """
-        count the appearances of nodes in the multi-hop graphs that are generated by random walks starting from src and dst nodes
-        :param src_node_ids: ndarray, shape (batch_size, )
-        :param dst_node_ids:: ndarray, shape (batch_size, )
-        :param node_interact_times: ndarray, shape (batch_size, )
-        :param src_node_multi_hop_graphs: tuple, each element in the tuple is a list of self.walk_length ndarrays, each with shape (batch_size, num_neighbors ** current_hop)
-        :param dst_node_multi_hop_graphs: tuple, each element in the tuple is a list of self.walk_length ndarrays, each with shape (batch_size, num_neighbors ** current_hop)
-        :return:
-        """
-        # use node id and interaction timestamp to identify a node in the multi-hop graph
-        # src_nodes_neighbor_ids and src_nodes_neighbor_times are lists, each list contains self.walk_length ndarrays, each with shape (batch_size, num_neighbors ** current_hop)
         src_nodes_neighbor_ids, _, src_nodes_neighbor_times = src_node_multi_hop_graphs
-        # dst_nodes_neighbor_ids and dst_nodes_neighbor_times are lists, each list contains self.walk_length ndarrays, each with shape (batch_size, num_neighbors ** current_hop)
         dst_nodes_neighbor_ids, _, dst_nodes_neighbor_times = dst_node_multi_hop_graphs
 
-        # dictionary, {node_identity (key): ndarray with shape (2, self.walk_length + 1) (value)}
-        # store the appearances of all the nodes in the multi-hop graphs that are generated by random walks starting from src and dst nodes
         self.nodes_appearances = {}
-        # get the multi-hop information for each node
         for idx, (src_node_id, dst_node_id, node_interact_time) in enumerate(zip(src_node_ids, dst_node_ids, node_interact_times)):
-            # src_node_neighbor_ids, list of ndarrays, each ndarray with shape (num_neighbors ** current_hop)
             src_node_neighbor_ids = [src_nodes_single_hop_neighbor_ids[idx] for src_nodes_single_hop_neighbor_ids in src_nodes_neighbor_ids]
             src_node_neighbor_times = [src_nodes_single_hop_neighbor_times[idx] for src_nodes_single_hop_neighbor_times in src_nodes_neighbor_times]
             dst_node_neighbor_ids = [dst_nodes_single_hop_neighbor_ids[idx] for dst_nodes_single_hop_neighbor_ids in dst_nodes_neighbor_ids]
             dst_node_neighbor_times = [dst_nodes_single_hop_neighbor_times[idx] for dst_nodes_single_hop_neighbor_times in dst_nodes_neighbor_times]
 
-            # dictionary, {node_identity (key): ndarray with shape (2, self.walk_length + 1) (value)}
-            # store the appearances of nodes in the multi-hop graphs that are generated by random walks starting from src_node_id and dst_node_id
             tmp_nodes_appearances = {}
-            # add the information of src_node and dst_node to the lists
             src_node_neighbor_ids, src_node_neighbor_times = [[src_node_id]] + src_node_neighbor_ids, [[node_interact_time]] + src_node_neighbor_times
             dst_node_neighbor_ids, dst_node_neighbor_times = [[dst_node_id]] + dst_node_neighbor_ids, [[node_interact_time]] + dst_node_neighbor_times
             for current_hop in range(self.walk_length + 1):
                 for src_node_neighbor_id, src_node_neighbor_time, dst_node_neighbor_id, dst_node_neighbor_time in \
                         zip(src_node_neighbor_ids[current_hop], src_node_neighbor_times[current_hop], dst_node_neighbor_ids[current_hop], dst_node_neighbor_times[current_hop]):
 
-                    # follow the CAWN official implementation, use the batch index and node id to represent the node key
                     src_node_key = '-'.join([str(idx), str(src_node_neighbor_id)])
                     dst_node_key = '-'.join([str(idx), str(dst_node_neighbor_id)])
 
                     if src_node_key not in tmp_nodes_appearances:
-                        # create a ndarray with shape (2, self.walk_length + 1) for the src node to record its appearances
                         tmp_nodes_appearances[src_node_key] = np.zeros((2, self.walk_length + 1), dtype=np.float32)
                     if dst_node_key not in tmp_nodes_appearances:
-                        # create a ndarray with shape (2, self.walk_length + 1) for the dst node to record its appearances
                         tmp_nodes_appearances[dst_node_key] = np.zeros((2, self.walk_length + 1), dtype=np.float32)
 
-                    # count the appearances of each node in the multi-hop graphs that are generated by random walks starting from src_node_id and dst_node_id
-                    # for each node, tmp_nodes_appearances[node_key][0, :] records the node appearances in the random walks starting from src_node_id
-                    # while tmp_nodes_appearances[node_key][1, :] records the node appearances in the random walks starting from dst_node_id
-                    # number of neighbors at the current hop
                     num_current_hop_neighbors = len(src_node_neighbor_ids[current_hop])
-                    # convert into landing probabilities by normalizing with k hop sampling number
                     tmp_nodes_appearances[src_node_key][0, current_hop] += 1 / num_current_hop_neighbors
                     tmp_nodes_appearances[dst_node_key][1, current_hop] += 1 / num_current_hop_neighbors
-            # set the appearances of the padded node (with zero index) to zeros
             tmp_nodes_appearances['-'.join([str(idx), str(0)])] = np.zeros((2, self.walk_length + 1), dtype=np.float32)
             self.nodes_appearances.update(tmp_nodes_appearances)
 
     def forward(self, nodes_neighbor_ids: np.ndarray):
-        """
-        compute the position features of nodes in nodes_neighbor_ids
-        :param nodes_neighbor_ids: ndarray, shape shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1)
-        :return:
-        return Torch.tensor: position features of shape [batch, k-hop-support-number, position_dim]
-        """
-        # batch_indices -> array([[[0, ..., 0,], ..., [0, ..., 0,]], [[1, ..., 1], ..., [1, ..., 1]] ..., [[batch - 1, ..., batch - 1], ..., [batch - 1, ..., batch - 1]]])
         batch_indices = np.arange(nodes_neighbor_ids.shape[0]).repeat(nodes_neighbor_ids.shape[1] * nodes_neighbor_ids.shape[2]).reshape(nodes_neighbor_ids.shape)
-
-        # list of string keys, shape (batch_size * (num_neighbors ** self.walk_length) * (self.walk_length + 1))
         batch_keys = ['-'.join([str(batch_indices[i][j][k]), str(nodes_neighbor_ids[i][j][k])])
                       for i in range(batch_indices.shape[0]) for j in range(batch_indices.shape[1]) for k in range(batch_indices.shape[2])]
-
-        # unique_keys, ndarray, shape (num_unique_keys, )
-        # inverse_indices, ndarray, shape (batch_size * (num_neighbors ** self.walk_length) * (self.walk_length + 1))
-        # we can use unique_keys[inverse_indices] to reconstruct the original input
         unique_keys, inverse_indices = np.unique(batch_keys, return_inverse=True)
-        # self.nodes_appearances, dictionary, {node_identity (key): ndarray with shape (2, self.walk_length + 1) (value)}
-        # unique_node_appearances, ndarray, shape (num_unique_keys, 2, self.walk_length + 1)
         unique_node_appearances = np.array([self.nodes_appearances[unique_key] for unique_key in unique_keys])
-        # the appearances of nodes in nodes_neighbor_ids, ndarray, shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1, 2, self.walk_length + 1)
         node_appearances = unique_node_appearances[inverse_indices, :].reshape(nodes_neighbor_ids.shape[0], nodes_neighbor_ids.shape[1],
                                                                                nodes_neighbor_ids.shape[2], 2, self.walk_length + 1)
-
-        # encode the node appearances in the random walks by MLPs
-        # Tensor, shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1, 2, position_feat_dim)
         position_features = self.position_encode_layer(torch.Tensor(node_appearances).float().to(self.device))
-        # add the position features of each node in random walks generated by src and dst nodes by summing over the second last dimension, Equation (6) in CAWN paper
-        # Tensor, shape (batch_size, num_neighbors ** self.walk_length, self.walk_length + 1, position_feat_dim)
         position_features = position_features.sum(dim=-2)
         return position_features
 

@@ -7,15 +7,15 @@ import warnings
 import json
 import torch.nn as nn
 
-from models.TGAT import TGAT
-from models.MemoryModel import MemoryModel, compute_src_dst_node_time_shifts
-from models.CAWN import CAWN
-from models.TCL import TCL
-from models.GraphMixer import GraphMixer
-from models.DyGFormer import DyGFormer
-from models.DyGMamba import DyGMamba
+from DyGMamba.models.TGAT import TGAT
+from DyGMamba.models.MemoryModel import MemoryModel, compute_src_dst_node_time_shifts
+from DyGMamba.models.CAWN import CAWN
+from DyGMamba.models.TCL import TCL
+from DyGMamba.models.GraphMixer import GraphMixer
+from DyGMamba.models.DyGFormer import DyGFormer
+from DyGMamba.models.DyGMamba import DyGMamba
 
-from models.modules import MergeLayer, MergeLayerTD
+from DyGMamba.models.modules import MergeLayer, MergeLayerTD
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes
 from utils.utils import get_neighbor_sampler, NegativeEdgeSampler
 from evaluate_models_utils import evaluate_model_link_prediction

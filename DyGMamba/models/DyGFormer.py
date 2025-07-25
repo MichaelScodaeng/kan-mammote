@@ -4,8 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import MultiheadAttention
 
-from models.modules import TimeEncoder
-from utils.utils import NeighborSampler
+# Import the new TimeEncoder wrapper from modules
+from DyGMamba.models.modules import TimeEncoder 
+from DyGMamba.utils.utils import NeighborSampler
 
 
 
@@ -14,7 +15,8 @@ class DyGFormer(nn.Module):
 
     def __init__(self, node_raw_features: np.ndarray, edge_raw_features: np.ndarray, neighbor_sampler: NeighborSampler,
                  time_feat_dim: int, channel_embedding_dim: int, patch_size: int = 1, num_layers: int = 2, num_heads: int = 2,
-                 dropout: float = 0.1, max_input_sequence_length: int = 512, device: str = 'cpu'):
+                 dropout: float = 0.1, max_input_sequence_length: int = 512, device: str = 'cpu',
+                 time_encoder_type: str = 'FixedSinusoidal', time_encoder_config: dict = None): # ADDED time_encoder_type and time_encoder_config
         """
         DyGFormer model.
         :param node_raw_features: ndarray, shape (num_nodes + 1, node_feat_dim)
@@ -28,6 +30,8 @@ class DyGFormer(nn.Module):
         :param dropout: float, dropout rate
         :param max_input_sequence_length: int, maximal length of the input sequence for each node
         :param device: str, device
+        :param time_encoder_type: str, type of time encoder to use (e.g., 'KANMAMMOTE', 'LeTE', 'SPE', 'LPE', 'NoTime', 'FixedSinusoidal')
+        :param time_encoder_config: dict, configuration dictionary for the time encoder
         """
         super(DyGFormer, self).__init__()
 
@@ -46,7 +50,8 @@ class DyGFormer(nn.Module):
         self.max_input_sequence_length = max_input_sequence_length
         self.device = device
 
-        self.time_encoder = TimeEncoder(time_dim=time_feat_dim)
+        # Instantiate the new TimeEncoder wrapper
+        self.time_encoder = TimeEncoder(time_dim=time_feat_dim, time_encoder_type=time_encoder_type, time_encoder_config=time_encoder_config) # UPDATED
 
         self.neighbor_co_occurrence_feat_dim = self.channel_embedding_dim
         self.neighbor_co_occurrence_encoder = NeighborCooccurrenceEncoder(neighbor_co_occurrence_feat_dim=self.neighbor_co_occurrence_feat_dim, device=self.device)
@@ -72,15 +77,18 @@ class DyGFormer(nn.Module):
         compute source and destination node temporal embeddings
         :param src_node_ids: ndarray, shape (batch_size, )
         :param dst_node_ids: ndarray, shape (batch_size, )
-        :param node_interact_times: ndarray, shape (batch_size, )
+        :param node_interact_times: ndarray, shape (batch_size, ) (Absolute current interaction time)
         :return:
+            src_node_embeddings (Tensor): Temporal embeddings for source nodes. Shape (batch_size, node_feat_dim).
+            dst_node_embeddings (Tensor): Temporal embeddings for destination nodes. Shape (batch_size, node_feat_dim).
+            time_encoder_reg_losses (dict): Dictionary of regularization losses from the time encoder.
         """
+        total_time_encoder_reg_losses = {}
+
         # get the first-hop neighbors of source and destination nodes
-        # three lists to store source nodes' first-hop neighbor ids, edge ids and interaction timestamp information, with batch_size as the list length
         src_nodes_neighbor_ids_list, src_nodes_edge_ids_list, src_nodes_neighbor_times_list = \
             self.neighbor_sampler.get_all_first_hop_neighbors(node_ids=src_node_ids, node_interact_times=node_interact_times)
 
-        # three lists to store destination nodes' first-hop neighbor ids, edge ids and interaction timestamp information, with batch_size as the list length
         dst_nodes_neighbor_ids_list, dst_nodes_edge_ids_list, dst_nodes_neighbor_times_list = \
             self.neighbor_sampler.get_all_first_hop_neighbors(node_ids=dst_node_ids, node_interact_times=node_interact_times)
 
@@ -91,7 +99,7 @@ class DyGFormer(nn.Module):
         src_padded_nodes_neighbor_ids, src_padded_nodes_edge_ids, src_padded_nodes_neighbor_times = \
             self.pad_sequences(node_ids=src_node_ids, node_interact_times=node_interact_times, nodes_neighbor_ids_list=src_nodes_neighbor_ids_list,
                                nodes_edge_ids_list=src_nodes_edge_ids_list, nodes_neighbor_times_list=src_nodes_neighbor_times_list,
-                               patch_size=self.patch_size, max_input_sequence_length=self.max_input_sequence_length)
+                               max_input_sequence_length=self.max_input_sequence_length)
 
         # dst_padded_nodes_neighbor_ids, ndarray, shape (batch_size, dst_max_seq_length)
         # dst_padded_nodes_edge_ids, ndarray, shape (batch_size, dst_max_seq_length)
@@ -99,7 +107,7 @@ class DyGFormer(nn.Module):
         dst_padded_nodes_neighbor_ids, dst_padded_nodes_edge_ids, dst_padded_nodes_neighbor_times = \
             self.pad_sequences(node_ids=dst_node_ids, node_interact_times=node_interact_times, nodes_neighbor_ids_list=dst_nodes_neighbor_ids_list,
                                nodes_edge_ids_list=dst_nodes_edge_ids_list, nodes_neighbor_times_list=dst_nodes_neighbor_times_list,
-                               patch_size=self.patch_size, max_input_sequence_length=self.max_input_sequence_length)
+                               max_input_sequence_length=self.max_input_sequence_length)
 
         # src_padded_nodes_neighbor_co_occurrence_features, Tensor, shape (batch_size, src_max_seq_length, neighbor_co_occurrence_feat_dim)
         # dst_padded_nodes_neighbor_co_occurrence_features, Tensor, shape (batch_size, dst_max_seq_length, neighbor_co_occurrence_feat_dim)
@@ -111,16 +119,28 @@ class DyGFormer(nn.Module):
         # src_padded_nodes_neighbor_node_raw_features, Tensor, shape (batch_size, src_max_seq_length, node_feat_dim)
         # src_padded_nodes_edge_raw_features, Tensor, shape (batch_size, src_max_seq_length, edge_feat_dim)
         # src_padded_nodes_neighbor_time_features, Tensor, shape (batch_size, src_max_seq_length, time_feat_dim)
-        src_padded_nodes_neighbor_node_raw_features, src_padded_nodes_edge_raw_features, src_padded_nodes_neighbor_time_features = \
-            self.get_features(node_interact_times=node_interact_times, padded_nodes_neighbor_ids=src_padded_nodes_neighbor_ids,
-                              padded_nodes_edge_ids=src_padded_nodes_edge_ids, padded_nodes_neighbor_times=src_padded_nodes_neighbor_times, time_encoder=self.time_encoder)
+        src_padded_nodes_neighbor_node_raw_features, src_padded_nodes_edge_raw_features, src_padded_nodes_neighbor_time_features, src_reg_losses_get_feat = \
+            self.get_features(node_interact_times=node_interact_times, # Absolute current interaction time
+                              padded_nodes_neighbor_ids=src_padded_nodes_neighbor_ids,
+                              padded_nodes_edge_ids=src_padded_nodes_edge_ids,
+                              padded_nodes_neighbor_times=src_padded_nodes_neighbor_times) # Absolute neighbor times
+        # Update total_time_encoder_reg_losses
+        for loss_name, loss_value in src_reg_losses_get_feat.items():
+            total_time_encoder_reg_losses[loss_name] = total_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value
+
 
         # dst_padded_nodes_neighbor_node_raw_features, Tensor, shape (batch_size, dst_max_seq_length, node_feat_dim)
         # dst_padded_nodes_edge_raw_features, Tensor, shape (batch_size, dst_max_seq_length, edge_feat_dim)
         # dst_padded_nodes_neighbor_time_features, Tensor, shape (batch_size, dst_max_seq_length, time_feat_dim)
-        dst_padded_nodes_neighbor_node_raw_features, dst_padded_nodes_edge_raw_features, dst_padded_nodes_neighbor_time_features = \
-            self.get_features(node_interact_times=node_interact_times, padded_nodes_neighbor_ids=dst_padded_nodes_neighbor_ids,
-                              padded_nodes_edge_ids=dst_padded_nodes_edge_ids, padded_nodes_neighbor_times=dst_padded_nodes_neighbor_times, time_encoder=self.time_encoder)
+        dst_padded_nodes_neighbor_node_raw_features, dst_padded_nodes_edge_raw_features, dst_padded_nodes_neighbor_time_features, dst_reg_losses_get_feat = \
+            self.get_features(node_interact_times=node_interact_times,
+                              padded_nodes_neighbor_ids=dst_padded_nodes_neighbor_ids,
+                              padded_nodes_edge_ids=dst_padded_nodes_edge_ids,
+                              padded_nodes_neighbor_times=dst_padded_nodes_neighbor_times)
+        # Update total_time_encoder_reg_losses
+        for loss_name, loss_value in dst_reg_losses_get_feat.items():
+            total_time_encoder_reg_losses[loss_name] = total_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value
+
 
         # get the patches for source and destination nodes
         # src_patches_nodes_neighbor_node_raw_features, Tensor, shape (batch_size, src_num_patches, patch_size * node_feat_dim)
@@ -162,29 +182,28 @@ class DyGFormer(nn.Module):
         src_num_patches = src_patches_nodes_neighbor_node_raw_features.shape[1]
         dst_num_patches = dst_patches_nodes_neighbor_node_raw_features.shape[1]
 
-        # Tensor, shape (batch_size, src_num_patches + dst_num_patches, channel_embedding_dim)
-        patches_nodes_neighbor_node_raw_features = torch.cat([src_patches_nodes_neighbor_node_raw_features, dst_patches_nodes_neighbor_node_raw_features], dim=1)
-        patches_nodes_edge_raw_features = torch.cat([src_patches_nodes_edge_raw_features, dst_patches_nodes_edge_raw_features], dim=1)
-        patches_nodes_neighbor_time_features = torch.cat([src_patches_nodes_neighbor_time_features, dst_patches_nodes_neighbor_time_features], dim=1)
-        patches_nodes_neighbor_co_occurrence_features = torch.cat([src_patches_nodes_neighbor_co_occurrence_features, dst_patches_nodes_neighbor_co_occurrence_features], dim=1)
-
-        patches_data = [patches_nodes_neighbor_node_raw_features, patches_nodes_edge_raw_features,
-                        patches_nodes_neighbor_time_features, patches_nodes_neighbor_co_occurrence_features]
-        # Tensor, shape (batch_size, src_num_patches + dst_num_patches, num_channels, channel_embedding_dim)
+        patches_data = [src_patches_nodes_neighbor_node_raw_features, src_patches_nodes_edge_raw_features,
+                        src_patches_nodes_neighbor_time_features, src_patches_nodes_neighbor_co_occurrence_features]
+        # Tensor, shape (batch_size, src_num_patches, num_channels, channel_embedding_dim)
         patches_data = torch.stack(patches_data, dim=2)
-        # Tensor, shape (batch_size, src_num_patches + dst_num_patches, num_channels * channel_embedding_dim)
-        patches_data = patches_data.reshape(batch_size, src_num_patches + dst_num_patches, self.num_channels * self.channel_embedding_dim)
+        # Tensor, shape (batch_size, src_num_patches, num_channels * channel_embedding_dim)
+        src_patches_data = patches_data.reshape(batch_size, src_num_patches, self.num_channels * self.channel_embedding_dim)
+
+        patches_data = [dst_patches_nodes_neighbor_node_raw_features, dst_patches_nodes_edge_raw_features,
+                        dst_patches_nodes_neighbor_time_features, dst_patches_nodes_neighbor_co_occurrence_features]
+        # Tensor, shape (batch_size, dst_num_patches, num_channels, channel_embedding_dim)
+        patches_data = torch.stack(patches_data, dim=2)
+        # Tensor, shape (batch_size, dst_num_patches, num_channels * channel_embedding_dim)
+        dst_patches_data = patches_data.reshape(batch_size, dst_num_patches, self.num_channels * self.channel_embedding_dim)
 
 
-        # Tensor, shape (batch_size, src_num_patches + dst_num_patches, num_channels * channel_embedding_dim)
+        # Apply transformers layers
+        # Tensor, shape (batch_size, src_num_patches, num_channels * channel_embedding_dim)
         for transformer in self.transformers:
-            patches_data = transformer(patches_data)
+            src_patches_data = transformer(src_patches_data)
+            dst_patches_data = transformer(dst_patches_data)
 
 
-        # src_patches_data, Tensor, shape (batch_size, src_num_patches, num_channels * channel_embedding_dim)
-        src_patches_data = patches_data[:, : src_num_patches, :]
-        # dst_patches_data, Tensor, shape (batch_size, dst_num_patches, num_channels * channel_embedding_dim)
-        dst_patches_data = patches_data[:, src_num_patches: src_num_patches + dst_num_patches, :]
         # src_patches_data, Tensor, shape (batch_size, num_channels * channel_embedding_dim)
         src_patches_data = torch.mean(src_patches_data, dim=1)
         # dst_patches_data, Tensor, shape (batch_size, num_channels * channel_embedding_dim)
@@ -196,12 +215,11 @@ class DyGFormer(nn.Module):
         dst_node_embeddings = self.output_layer(dst_patches_data)
 
 
-        return src_node_embeddings, dst_node_embeddings
-
+        return src_node_embeddings, dst_node_embeddings, total_time_encoder_reg_losses # ADDED regularization losses
 
 
     def pad_sequences(self, node_ids: np.ndarray, node_interact_times: np.ndarray, nodes_neighbor_ids_list: list, nodes_edge_ids_list: list,
-                      nodes_neighbor_times_list: list, patch_size: int = 1, max_input_sequence_length: int = 256):
+                      nodes_neighbor_times_list: list, max_input_sequence_length: int):
         """
         pad the sequences for nodes in node_ids
         :param node_ids: ndarray, shape (batch_size, )
@@ -209,12 +227,11 @@ class DyGFormer(nn.Module):
         :param nodes_neighbor_ids_list: list of ndarrays, each ndarray contains neighbor ids for nodes in node_ids
         :param nodes_edge_ids_list: list of ndarrays, each ndarray contains edge ids for nodes in node_ids
         :param nodes_neighbor_times_list: list of ndarrays, each ndarray contains neighbor interaction timestamp for nodes in node_ids
-        :param patch_size: int, patch size
         :param max_input_sequence_length: int, maximal number of neighbors for each node
         :return:
         """
         assert max_input_sequence_length - 1 > 0, 'Maximal number of neighbors for each node should be greater than 1!'
-        max_seq_length = 0
+        max_seq_length = max_input_sequence_length
         # first cut the sequence of nodes whose number of neighbors is more than max_input_sequence_length - 1 (we need to include the target node in the sequence)
         for idx in range(len(nodes_neighbor_ids_list)):
             assert len(nodes_neighbor_ids_list[idx]) == len(nodes_edge_ids_list[idx]) == len(nodes_neighbor_times_list[idx])
@@ -223,14 +240,14 @@ class DyGFormer(nn.Module):
                 nodes_neighbor_ids_list[idx] = nodes_neighbor_ids_list[idx][-(max_input_sequence_length - 1):]
                 nodes_edge_ids_list[idx] = nodes_edge_ids_list[idx][-(max_input_sequence_length - 1):]
                 nodes_neighbor_times_list[idx] = nodes_neighbor_times_list[idx][-(max_input_sequence_length - 1):]
-            if len(nodes_neighbor_ids_list[idx]) > max_seq_length:
-                max_seq_length = len(nodes_neighbor_ids_list[idx])
+            # No dynamic adjustment of max_seq_length based on actual content, it's fixed to max_input_sequence_length.
+            # This is important for DyGFormer/Mamba since their layers expect fixed input shapes.
 
         # include the target node itself
-        max_seq_length += 1
-        if max_seq_length % patch_size != 0:
-            max_seq_length += (patch_size - max_seq_length % patch_size)
-        assert max_seq_length % patch_size == 0
+        # max_seq_length += 1 # No longer needed, max_input_sequence_length should already account for this
+        if max_seq_length % self.patch_size != 0:
+            max_seq_length += (self.patch_size - max_seq_length % self.patch_size)
+        assert max_seq_length % self.patch_size == 0
 
         # pad the sequences
         # three ndarrays with shape (batch_size, max_seq_length)
@@ -239,11 +256,14 @@ class DyGFormer(nn.Module):
         padded_nodes_neighbor_times = np.zeros((len(node_ids), max_seq_length)).astype(np.float32)
 
         for idx in range(len(node_ids)):
-            padded_nodes_neighbor_ids[idx, 0] = node_ids[idx]
+            padded_nodes_neighbor_ids[idx, 0] = node_ids[idx] # Current node at index 0 (left padding, current node is first)
             padded_nodes_edge_ids[idx, 0] = 0
             padded_nodes_neighbor_times[idx, 0] = node_interact_times[idx]
 
             if len(nodes_neighbor_ids_list[idx]) > 0:
+                # This seems like right padding for historical neighbors after the current node.
+                # DyGFormer's original code: `padded_nodes_neighbor_ids[idx, 1: len(nodes_neighbor_ids_list[idx]) + 1] = nodes_neighbor_ids_list[idx]`
+                # This means the current node is at index 0, and historical neighbors follow.
                 padded_nodes_neighbor_ids[idx, 1: len(nodes_neighbor_ids_list[idx]) + 1] = nodes_neighbor_ids_list[idx]
                 padded_nodes_edge_ids[idx, 1: len(nodes_edge_ids_list[idx]) + 1] = nodes_edge_ids_list[idx]
                 padded_nodes_neighbor_times[idx, 1: len(nodes_neighbor_times_list[idx]) + 1] = nodes_neighbor_times_list[idx]
@@ -252,27 +272,46 @@ class DyGFormer(nn.Module):
         return padded_nodes_neighbor_ids, padded_nodes_edge_ids, padded_nodes_neighbor_times
 
     def get_features(self, node_interact_times: np.ndarray, padded_nodes_neighbor_ids: np.ndarray, padded_nodes_edge_ids: np.ndarray,
-                     padded_nodes_neighbor_times: np.ndarray, time_encoder: TimeEncoder):
+                     padded_nodes_neighbor_times: np.ndarray): # REMOVED time_encoder as an argument, use self.time_encoder
         """
         get node, edge and time features
-        :param node_interact_times: ndarray, shape (batch_size, )
+        :param node_interact_times: ndarray, shape (batch_size, ) (Absolute time of the query node)
         :param padded_nodes_neighbor_ids: ndarray, shape (batch_size, max_seq_length)
         :param padded_nodes_edge_ids: ndarray, shape (batch_size, max_seq_length)
-        :param padded_nodes_neighbor_times: ndarray, shape (batch_size, max_seq_length)
-        :param time_encoder: TimeEncoder, time encoder
-        :return:
+        :param padded_nodes_neighbor_times: ndarray, shape (batch_size, max_seq_length) (Absolute times of sequence elements)
+        :return: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]
+            node_raw_features, edge_raw_features, time_features, regularization_losses
         """
+        # Initialize losses for this helper call
+        current_time_encoder_reg_losses = {}
+        device = self.device
+
         # Tensor, shape (batch_size, max_seq_length, node_feat_dim)
         padded_nodes_neighbor_node_raw_features = self.node_raw_features[torch.from_numpy(padded_nodes_neighbor_ids)]
         # Tensor, shape (batch_size, max_seq_length, edge_feat_dim)
         padded_nodes_edge_raw_features = self.edge_raw_features[torch.from_numpy(padded_nodes_edge_ids)]
+        
+        # Calls the new TimeEncoder wrapper, passing absolute times
+        # current_times: absolute time of the main node repeated across the sequence elements
+        # Note: In DyGFormer's pad_sequences, the current node is at index 0.
+        # So, node_interact_times is the correct current_times.
+        current_times_for_encoder = torch.from_numpy(node_interact_times[:, np.newaxis].repeat(padded_nodes_neighbor_ids.shape[1], axis=1)).float().to(device)
+        # neighbor_times: absolute times of the sequence elements themselves
+        neighbor_times_for_encoder = torch.from_numpy(padded_nodes_neighbor_times).float().to(device)
+
         # Tensor, shape (batch_size, max_seq_length, time_feat_dim)
-        padded_nodes_neighbor_time_features = time_encoder(timestamps=torch.from_numpy(node_interact_times[:, np.newaxis] - padded_nodes_neighbor_times).float().to(self.device))
+        nodes_neighbor_time_features, reg_losses_time_feat = self.time_encoder(
+            current_times=current_times_for_encoder,
+            neighbor_times=neighbor_times_for_encoder
+        )
+        # Accumulate regularization losses
+        for loss_name, loss_value in reg_losses_time_feat.items():
+            current_time_encoder_reg_losses[loss_name] = current_time_encoder_reg_losses.get(loss_name, 0.0) + loss_value
 
         # ndarray, set the time features to all zeros for the padded timestamp
-        padded_nodes_neighbor_time_features[torch.from_numpy(padded_nodes_neighbor_ids == 0)] = 0.0
+        nodes_neighbor_time_features[torch.from_numpy(padded_nodes_neighbor_ids == 0)] = 0.0
 
-        return padded_nodes_neighbor_node_raw_features, padded_nodes_edge_raw_features, padded_nodes_neighbor_time_features
+        return padded_nodes_neighbor_node_raw_features, padded_nodes_edge_raw_features, nodes_neighbor_time_features, current_time_encoder_reg_losses
 
     def get_patches(self, padded_nodes_neighbor_node_raw_features: torch.Tensor, padded_nodes_edge_raw_features: torch.Tensor,
                     padded_nodes_neighbor_time_features: torch.Tensor, padded_nodes_neighbor_co_occurrence_features: torch.Tensor = None, patch_size: int = 1):
@@ -287,6 +326,7 @@ class DyGFormer(nn.Module):
         """
         assert padded_nodes_neighbor_node_raw_features.shape[1] % patch_size == 0
         num_patches = padded_nodes_neighbor_node_raw_features.shape[1] // patch_size
+
 
         # list of Tensors with shape (num_patches, ), each Tensor with shape (batch_size, patch_size, node_feat_dim)
         patches_nodes_neighbor_node_raw_features, patches_nodes_edge_raw_features, \
@@ -322,6 +362,8 @@ class DyGFormer(nn.Module):
         if self.neighbor_sampler.sample_neighbor_strategy in ['uniform', 'time_interval_aware']:
             assert self.neighbor_sampler.seed is not None
             self.neighbor_sampler.reset_random_state()
+
+
 
 
 class NeighborCooccurrenceEncoder(nn.Module):

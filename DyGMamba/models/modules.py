@@ -2,41 +2,69 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Tuple, Dict
 
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# Add imports for your new time encoders
+from DyGMamba.models.KANMAMMOTE_TimeEncoder import KANMAMMOTE_TimeEncoder
+from DyGMamba.models.LeTE_TimeEncoder import LeTE_TimeEncoder
+from DyGMamba.models.SPE_TimeEncoder import SPE_TimeEncoder
+from DyGMamba.models.LPE_TimeEncoder import LPE_TimeEncoder
+from DyGMamba.models.NoTime_TimeEncoder import NoTime_TimeEncoder
+from DyGMamba.models.FixedSinusoidal_TimeEncoder import FixedSinusoidalTimeEncoder
+
+# Import KANMAMMOTEConfig for KANMAMMOTE_TimeEncoder
+from src.utils.config import KANMAMMOTEConfig 
+
+# Renamed original TimeEncoder
 
 class TimeEncoder(nn.Module):
-
-    def __init__(self, time_dim: int, parameter_requires_grad: bool = True):
-        """
-        Time encoder.
-        :param time_dim: int, dimension of time encodings
-        :param parameter_requires_grad: boolean, whether the parameter in TimeEncoder needs gradient
-        """
-        super(TimeEncoder, self).__init__()
-
+    """
+    Central TimeEncoder wrapper/dispatcher.
+    It instantiates and delegates to the specified time encoding method.
+    All models will use this TimeEncoder class, configuring it via type and config.
+    """
+    def __init__(self, time_dim: int, time_encoder_type: str, time_encoder_config: dict = None):
+        super().__init__()
         self.time_dim = time_dim
-        # trainable parameters for time encoding
-        self.w = nn.Linear(1, time_dim)
-        self.w.weight = nn.Parameter((torch.from_numpy(1 / 10 ** np.linspace(0, 9, time_dim, dtype=np.float32))).reshape(time_dim, -1))
-        self.w.bias = nn.Parameter(torch.zeros(time_dim))
+        self.time_encoder_type = time_encoder_type
+        
+        # Default empty config to avoid None issues if specific encoder has no extra params
+        if time_encoder_config is None:
+            time_encoder_config = {}
 
-        if not parameter_requires_grad:
-            self.w.weight.requires_grad = False
-            self.w.bias.requires_grad = False
+        if self.time_encoder_type == 'KANMAMMOTE':
+            # Create KANMAMMOTEConfig from the dictionary provided
+            kan_config = KANMAMMOTEConfig(**time_encoder_config)
+            self.time_encoder = KANMAMMOTE_TimeEncoder(time_dim=time_dim, kan_mammote_config=kan_config)
+        elif self.time_encoder_type == 'LeTE':
+            self.time_encoder = LeTE_TimeEncoder(time_dim=time_dim, **time_encoder_config)
+        elif self.time_encoder_type == 'SPE':
+            self.time_encoder = SPE_TimeEncoder(time_dim=time_dim) # SPE_TimeEncoder doesn't use extra config
+        elif self.time_encoder_type == 'LPE':
+            self.time_encoder = LPE_TimeEncoder(time_dim=time_dim, **time_encoder_config)
+        elif self.time_encoder_type == 'NoTime':
+            self.time_encoder = NoTime_TimeEncoder(time_dim=time_dim) # NoTime_TimeEncoder doesn't use extra config
+        elif self.time_encoder_type == 'FixedSinusoidal':
+            # The original module's TimeEncoder
+            self.time_encoder = FixedSinusoidalTimeEncoder(time_dim=time_dim, parameter_requires_grad=True) # Usually learnable for baselines unless specified
+        else:
+            raise ValueError(f"Unsupported time_encoder_type: {time_encoder_type}")
 
-    def forward(self, timestamps: torch.Tensor):
+    def forward(self, current_times: torch.Tensor,
+                neighbor_times: torch.Tensor,
+                auxiliary_features: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, dict]:
         """
-        compute time encodings of time in timestamps
-        :param timestamps: Tensor, shape (batch_size, seq_len)
-        :return:
+        Delegates the forward pass to the selected time encoder.
+        All time encoders are expected to conform to this signature:
+        (current_times, neighbor_times, auxiliary_features) -> (time_embeddings, regularization_losses_dict)
         """
-        # Tensor, shape (batch_size, seq_len, 1)
-        timestamps = timestamps.unsqueeze(dim=2)
-
-        # Tensor, shape (batch_size, seq_len, time_dim)
-        output = torch.cos(self.w(timestamps))
-
-        return output
+        return self.time_encoder(current_times, neighbor_times, auxiliary_features)
 
 
 class MergeLayer(nn.Module):
